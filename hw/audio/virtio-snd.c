@@ -1022,6 +1022,74 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 }
 
 /*
+ * Adds a virtqueue element to a VirtIOSound card stream. Makes the buffer
+ * available to the stream for consumption.
+ *
+ * @s: VirtIOSound card
+ * @stream: stream id
+ * @elem: The tx virtqueue element that contains the I/O message
+ */
+static void virtio_snd_pcm_add_buf(VirtIOSound *s, uint32_t stream,
+                                   VirtQueueElement *elem)
+{
+    virtio_snd_log("add_buf called\n");
+
+    virtio_snd_pcm_stream *st = virtio_snd_pcm_get_stream(s, stream);
+    uint32_t buf_size, dir;
+    int i;
+
+    // get the direction opposite to the stream. We need read position if we are
+    // writing because we want to add data to the buffer and not consume it.
+    dir = VIRTIO_SND_D_INPUT ^ VIRTIO_SND_D_OUTPUT ^ st->direction;
+    i = virtio_snd_pcm_get_curr_elem(st, dir);
+
+    if (st->elems[i]) {
+        return;
+    }
+
+    buf_size = iov_size(elem->out_sg, elem->out_num)
+               - sizeof(virtio_snd_pcm_xfer);
+
+    st->elems[i] = elem;
+    virtio_snd_pcm_update_buf_pos(st, dir, buf_size);
+}
+
+/*
+ * The tx virtqueue handler. Makes the buffers available to their respective
+ * streams for consumption.
+ *
+ * @vdev: VirtIOSound card
+ * @vq: tx virtqueue
+ */
+static void virtio_snd_handle_xfer(VirtIODevice *vdev, VirtQueue *vq)
+{
+    virtio_snd_log("tx/rx queue callback called\n");
+    VirtIOSound *s = VIRTIO_SOUND(vdev);
+    VirtQueueElement *elem;
+    size_t sz;
+    virtio_snd_pcm_xfer hdr;
+
+    for (;;) {
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        if (!elem) {
+            break;
+        }
+        if (iov_size(elem->in_sg, elem->in_num) < sizeof(virtio_snd_pcm_status) ||
+            iov_size(elem->out_sg, elem->out_num) < sizeof(virtio_snd_pcm_xfer)) {
+            virtqueue_detach_element(vq, elem, 0);
+            g_free(elem);
+            break;
+        }
+
+        /* get the message hdr object */
+        sz = iov_to_buf(elem->out_sg, elem->out_num, 0, &hdr, sizeof(hdr));
+        assert(sz == sizeof(hdr));
+
+        virtio_snd_pcm_add_buf(s, hdr.stream_id, elem);
+    }
+}
+
+/*
  * Initializes the VirtIOSound card device. Validates the configuration
  * passed by the command line. Initializes the virtqueues. Allocates resources
  * for and initializes streams, jacks and chmaps.
@@ -1065,6 +1133,8 @@ static void virtio_snd_device_realize(DeviceState *dev, Error **errp)
     default_params.rate = VIRTIO_SND_PCM_RATE_44100;
 
     s->ctrl_vq = virtio_add_queue(vdev, 64, virtio_snd_handle_ctrl);
+    s->tx_vq = virtio_add_queue(vdev, 64, virtio_snd_handle_xfer);
+    s->rx_vq = virtio_add_queue(vdev, 64, virtio_snd_handle_xfer);
 
     s->streams = g_new0(virtio_snd_pcm_stream *, s->snd_conf.streams);
     s->pcm_params = g_new0(virtio_snd_pcm_params *, s->snd_conf.streams);
@@ -1132,7 +1202,6 @@ static void virtio_snd_device_unrealize(DeviceState *dev)
 
     virtio_delete_queue(s->ctrl_vq);
     virtio_delete_queue(s->tx_vq);
-    virtio_delete_queue(s->event_vq);
     virtio_delete_queue(s->rx_vq);
 }
 
