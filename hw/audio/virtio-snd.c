@@ -867,6 +867,85 @@ static uint32_t virtio_snd_handle_pcm_start_stop(VirtIOSound *s,
     return sz;
 }
 
+/*
+ * Releases the resources allocated to a stream. Sepearated from the handler
+ * so that the code could be reused in the unrealize function.
+ *
+ * TODO: Doesn't handle the stream buffers that are yet to be played.
+ *
+ * @s: VirtIOSound card
+ * @stream: stream id
+ */
+static uint32_t virtio_snd_pcm_release_impl(virtio_snd_pcm_stream *st, uint32_t stream)
+{
+    // if there are still pending io messages do nothing
+    if (virtio_snd_pcm_get_pending_bytes(st)) {
+        // flush the stream
+        virtio_snd_log("Started flushing stream");
+
+        // set flushing to true, the callback will automatically close the
+        // stream once the flushing is done
+        st->flushing = true;
+
+        if (st->direction == VIRTIO_SND_D_OUTPUT)
+            AUD_set_active_out(st->voice.out, true);
+        else
+            AUD_set_active_in(st->voice.in, true);
+        return VIRTIO_SND_S_OK;
+    }
+
+    if (st->direction == VIRTIO_SND_D_OUTPUT)
+        AUD_close_out(&st->s->card, st->voice.out);
+    else
+        AUD_close_in(&st->s->card, st->voice.in);
+
+    if (st->elems) {
+        int nelems = virtio_snd_pcm_get_nelems(st);
+        for (int i = 0; i < nelems; i++) {
+            g_free(st->elems[i]);
+            st->elems[i] = NULL;
+        }
+        g_free(st->elems);
+        st->elems = NULL;
+    }
+
+    g_free(st->s->streams[stream]);
+    st->s->streams[stream] = NULL;
+    return VIRTIO_SND_S_OK;
+}
+
+/*
+ * Handles VIRTIO_SND_R_PCM_RELEASE.
+ * The function writes the response to the virtqueue element.
+ * Returns the used size in bytes.
+ * TODO: Doesn't handle the stream buffers that are yet to be played.
+ *
+ * @s: VirtIOSound card
+ * @elem: The request element from control queue
+ */
+static uint32_t virtio_snd_handle_pcm_release(VirtIOSound *s,
+                                              VirtQueueElement *elem)
+{
+    virtio_snd_pcm_hdr req;
+    virtio_snd_hdr resp;
+    size_t sz;
+    sz = iov_to_buf(elem->out_sg, elem->out_num, 0, &req, sizeof(req));
+    assert(sz == sizeof(virtio_snd_pcm_hdr));
+
+    virtio_snd_log("Release called\n");
+
+    virtio_snd_pcm_stream *st = virtio_snd_pcm_get_stream(s, req.stream_id);
+    if (!st) {
+        virtio_snd_err("already released %d\n", req.stream_id);
+        return VIRTIO_SND_S_BAD_MSG;
+    }
+
+    resp.code = virtio_snd_pcm_release_impl(st, req.stream_id);
+    sz = iov_from_buf(elem->in_sg, elem->in_num, 0, &resp, sizeof(resp));
+    assert(sz == sizeof(virtio_snd_hdr));
+    return sz;
+}
+
 /* The control queue handler. Pops an element from the control virtqueue,
  * checks the header and performs the requested action. Finally marks the
  * element as used.
@@ -926,9 +1005,10 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         } else if (ctrl.code == VIRTIO_SND_R_PCM_STOP) {
             sz = virtio_snd_handle_pcm_start_stop(s, elem, false);
         } else if (ctrl.code == VIRTIO_SND_R_PCM_RELEASE) {
-            virtio_snd_log("VIRTIO_SND_R_PCM_RELEASE");
+            sz = virtio_snd_handle_pcm_release(s, elem);
         } else if (ctrl.code == VIRTIO_SND_R_CHMAP_INFO) {
             virtio_snd_log("VIRTIO_SND_R_CHMAP_INFO");
+            goto done;
         } else {
             /* error */
             virtio_snd_err("virtio snd header not recognized: %d\n", ctrl.code);
