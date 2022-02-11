@@ -17,3 +17,17 @@ via_ac97_codec_write(uint8_t addr, uint16_t val) "0x%x <- 0x%x"
 via_ac97_sgd_fetch(uint32_t curr, uint32_t addr, char stop, char eol, char flag, uint32_t len) "curr=0x%x addr=0x%x %c%c%c len=%d"
 via_ac97_sgd_read(uint64_t addr, unsigned size, uint64_t val) "0x%"PRIx64" %d -> 0x%"PRIx64
 via_ac97_sgd_write(uint64_t addr, unsigned size, uint64_t val) "0x%"PRIx64" %d <- 0x%"PRIx64
+
+#virtio-snd.c
+virtio_snd_pcm_stream_flush(int stream) "flushing st %d"
+virtio_snd_handle_jack_info(int jack) "VIRTIO_SND_JACK_INFO called for jack %d"
+virtio_snd_handle_jack_remap(void) "VIRTIO_SND_PCM_JACK_REMAP called"
+virtio_snd_handle_pcm_info(int stream) "VIRTIO_SND_PCM_INFO called for stream %d"
+virtio_snd_handle_pcm_set_params(int stream) "VIRTIO_SND_PCM_SET_PARAMS called for stream %d"
+virtio_snd_handle_pcm_start(int stream) "VIRTIO_SND_PCM_START called for stream %d"
+virtio_snd_handle_pcm_stop(int stream) "VIRTIO_SND_PCM_STOP called for stream %id"
+virtio_snd_handle_pcm_release(int stream) "VIRTIO_SND_PCM_RELEASE called for stream %id"
+virtio_snd_handle_chmap_info(void) "VIRTIO_SND_CHMAP_INFO called"
+virtio_snd_output_cb(int to_play, int written) "to play: %d, written: %d"
+virtio_snd_handle_xfer(void) "tx/rx queue callback called"
+virtio_snd_handle_event(void) "event queue callback called"

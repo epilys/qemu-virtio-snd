@@ -39,10 +39,6 @@
 #define VIRTIO_SOUND_HDA_FN_NID_OUT 0
 #define VIRTIO_SOUND_HDA_FN_NID_IN 1
 
-#define virtio_snd_log(...) AUD_log("virtio sound info", __VA_ARGS__)
-#define virtio_snd_warn(...) AUD_log("virtio sound warn", __VA_ARGS__)
-#define virtio_snd_err(...) AUD_log("virtio sound err", __VA_ARGS__)
-
 static void virtio_snd_get_config(VirtIODevice *vdev, uint8_t *config)
 {
     VirtIOSound *s = VIRTIO_SOUND(vdev);
@@ -126,7 +122,7 @@ static uint32_t virtio_snd_handle_jack_info(VirtIOSound *s,
 
     if (iov_size(elem->in_sg, elem->in_num) <
         sizeof(virtio_snd_hdr) + req.count * req.size) {
-        virtio_snd_err("jack info: buffer too small got: %lu needed: %lu\n",
+        error_report("jack info: buffer too small got: %lu needed: %lu\n",
                        iov_size(elem->in_sg, elem->in_num),
                        sizeof(virtio_snd_hdr) + req.count * req.size);
         resp.code = VIRTIO_SND_S_BAD_MSG;
@@ -135,9 +131,10 @@ static uint32_t virtio_snd_handle_jack_info(VirtIOSound *s,
 
     jack_info = g_new0(virtio_snd_jack_info, req.count);
     for (int i = req.start_id; i < req.count + req.start_id; i++) {
+        trace_virtio_snd_handle_jack_info(i);
         virtio_snd_jack *jack = virtio_snd_get_jack(s, i);
         if (!jack) {
-            virtio_snd_err("Invalid jack id: %d\n", i);
+            error_report("Invalid jack id: %d\n", i);
             resp.code = VIRTIO_SND_S_BAD_MSG;
             goto done;
         }
@@ -181,6 +178,7 @@ static uint32_t virtio_snd_handle_jack_remap(VirtIOSound *s,
     virtio_snd_hdr resp;
     resp.code = VIRTIO_SND_S_OK;
 
+    trace_virtio_snd_handle_jack_remap();
     /* TODO: implement remap */
 
     size_t sz;
@@ -203,7 +201,6 @@ static virtio_snd_pcm_stream *virtio_snd_pcm_get_stream(VirtIOSound *s,
                                                         uint32_t stream)
 {
     if (stream >= s->snd_conf.streams) {
-        virtio_snd_err("Invalid stream request %d\n", stream);
         return NULL;
     }
     return s->streams[stream];
@@ -219,7 +216,6 @@ static virtio_snd_pcm_params *virtio_snd_pcm_get_params(VirtIOSound *s,
                                                         uint32_t stream)
 {
     if (stream >= s->snd_conf.streams) {
-        virtio_snd_err("Invalid stream request %d\n", stream);
         return NULL;
     }
     return s->pcm_params[stream];
@@ -247,7 +243,7 @@ static uint32_t virtio_snd_handle_pcm_info(VirtIOSound *s,
     virtio_snd_hdr resp;
     if (iov_size(elem->in_sg, elem->in_num) <
         sizeof(virtio_snd_hdr) + req.size * req.count) {
-        virtio_snd_err("pcm info: buffer too small, got: %lu, needed: %lu\n",
+        error_report("pcm info: buffer too small, got: %lu, needed: %lu\n",
                 iov_size(elem->in_sg, elem->in_num),
                 sizeof(virtio_snd_pcm_info));
         resp.code = VIRTIO_SND_S_BAD_MSG;
@@ -256,10 +252,11 @@ static uint32_t virtio_snd_handle_pcm_info(VirtIOSound *s,
 
     pcm_info = g_new0(virtio_snd_pcm_info, req.count);
     for (int i = req.start_id; i < req.start_id + req.count; i++) {
+        trace_virtio_snd_handle_pcm_info(i);
         stream = virtio_snd_pcm_get_stream(s, i);
 
         if (!stream) {
-            virtio_snd_err("Invalid stream id: %d\n", i);
+            error_report("Invalid stream id: %d\n", i);
             resp.code = VIRTIO_SND_S_BAD_MSG;
             goto done;
         }
@@ -326,7 +323,7 @@ static uint32_t virtio_snd_pcm_set_params_impl(VirtIOSound *s,
     st_params->period_bytes = params->period_bytes;
 
     if (params->channel < 1 || params->channel > AUDIO_MAX_CHANNELS) {
-        virtio_snd_err("Number of channels not supported\n");
+        error_report("Number of channels not supported\n");
         return VIRTIO_SND_S_NOT_SUPP;
     }
     st_params->channel = params->channel;
@@ -355,13 +352,13 @@ static uint32_t virtio_snd_pcm_set_params_impl(VirtIOSound *s,
                                1 << VIRTIO_SND_PCM_RATE_384000;
 
     if (!(supported_formats & (1 << params->format))) {
-        virtio_snd_err("Stream format not supported\n");
+        error_report("Stream format not supported\n");
         return VIRTIO_SND_S_NOT_SUPP;
     }
     st_params->format = params->format;
 
     if (!(supported_rates & (1 << params->rate))) {
-        virtio_snd_err("Stream rate not supported\n");
+        error_report("Stream rate not supported\n");
         return VIRTIO_SND_S_NOT_SUPP;
     }
     st_params->rate = params->rate;
@@ -387,6 +384,7 @@ static uint32_t virtio_snd_handle_pcm_set_params(VirtIOSound *s,
     sz = iov_to_buf(elem->out_sg, elem->out_num, 0, &req, sizeof(req));
     assert(sz == sizeof(virtio_snd_pcm_set_params));
 
+    trace_virtio_snd_handle_pcm_set_params(req.hdr.stream_id);
     virtio_snd_hdr resp;
     resp.code = virtio_snd_pcm_set_params_impl(s, &req);
 
@@ -711,7 +709,6 @@ static void virtio_snd_output_cb(void *opaque, int free)
 
     to_play = MIN(free, pending);
 
-    virtio_snd_log("to_play: %d, free: %d, pending: %d\n", to_play, free, pending);
     while (to_play) {
         int wbytes = write_audio(st, to_play);
 
@@ -724,7 +721,7 @@ static void virtio_snd_output_cb(void *opaque, int free)
         pending -= wbytes;
     }
 
-    virtio_snd_log("written: %d\n", written);
+    trace_virtio_snd_output_cb(to_play, written);
 }
 
 /*
@@ -737,7 +734,6 @@ static void virtio_snd_output_cb(void *opaque, int free)
 static uint32_t virtio_snd_pcm_prepare_impl(VirtIOSound *s, uint32_t stream)
 {
     if (!s->streams || !s->pcm_params || !s->pcm_params[stream]) {
-        virtio_snd_err("Cannot prepare stream %d without params.\n", stream);
         return VIRTIO_SND_S_BAD_MSG;
     }
 
@@ -858,6 +854,7 @@ static uint32_t virtio_snd_handle_pcm_start_stop(VirtIOSound *s,
     virtio_snd_hdr resp;
     resp.code = VIRTIO_SND_S_OK;
 
+    trace_virtio_snd_handle_pcm_stop(req.stream_id);
     virtio_snd_pcm_stream *st = virtio_snd_pcm_get_stream(s, req.stream_id);
     if (st->direction == VIRTIO_SND_D_OUTPUT)
         AUD_set_active_out(st->voice.out, start);
@@ -880,9 +877,6 @@ static uint32_t virtio_snd_pcm_release_impl(virtio_snd_pcm_stream *st, uint32_t 
 {
     // if there are still pending io messages do nothing
     if (virtio_snd_pcm_get_pending_bytes(st)) {
-        // flush the stream
-        virtio_snd_log("Started flushing stream");
-
         // set flushing to true, the callback will automatically close the
         // stream once the flushing is done
         st->flushing = true;
@@ -932,11 +926,11 @@ static uint32_t virtio_snd_handle_pcm_release(VirtIOSound *s,
     sz = iov_to_buf(elem->out_sg, elem->out_num, 0, &req, sizeof(req));
     assert(sz == sizeof(virtio_snd_pcm_hdr));
 
-    virtio_snd_log("Release called\n");
+    trace_virtio_snd_handle_pcm_release(req.stream_id);
 
     virtio_snd_pcm_stream *st = virtio_snd_pcm_get_stream(s, req.stream_id);
     if (!st) {
-        virtio_snd_err("already released %d\n", req.stream_id);
+        error_report("already released stream %d", req.stream_id);
         return VIRTIO_SND_S_BAD_MSG;
     }
 
@@ -970,7 +964,7 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         }
         if (iov_size(elem->in_sg, elem->in_num) < sizeof(resp) ||
                 iov_size(elem->out_sg, elem->out_num) < sizeof(ctrl)) {
-            virtio_snd_err("virtio-snd ctrl missing headers\n");
+            error_report("virtio-snd ctrl missing headers\n");
             virtqueue_detach_element(vq, elem, 0);
             g_free(elem);
             break;
@@ -983,7 +977,7 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         iov_discard_front(&iov, &iov_cnt, sizeof(ctrl));
         if (sz != sizeof(ctrl)) {
             /* error */
-            virtio_snd_err("virtio snd ctrl could not read header\n");
+            error_report("virtio snd ctrl could not read header\n");
             resp.code = VIRTIO_SND_S_BAD_MSG;
         } else if (ctrl.code == VIRTIO_SND_R_JACK_INFO) {
             sz = virtio_snd_handle_jack_info(s, elem);
@@ -1002,10 +996,10 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         } else if (ctrl.code == VIRTIO_SND_R_PCM_RELEASE) {
             sz = virtio_snd_handle_pcm_release(s, elem);
         } else if (ctrl.code == VIRTIO_SND_R_CHMAP_INFO) {
-            virtio_snd_log("VIRTIO_SND_R_CHMAP_INFO");
+            trace_virtio_snd_handle_chmap_info();
         } else {
             /* error */
-            virtio_snd_err("virtio snd header not recognized: %d\n", ctrl.code);
+            error_report("virtio snd header not recognized: %d\n", ctrl.code);
             resp.code = VIRTIO_SND_S_BAD_MSG;
         }
 
@@ -1032,8 +1026,6 @@ static void virtio_snd_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 static void virtio_snd_pcm_add_buf(VirtIOSound *s, uint32_t stream,
                                    VirtQueueElement *elem)
 {
-    virtio_snd_log("add_buf called\n");
-
     virtio_snd_pcm_stream *st = virtio_snd_pcm_get_stream(s, stream);
     uint32_t buf_size, dir;
     int i;
@@ -1063,11 +1055,12 @@ static void virtio_snd_pcm_add_buf(VirtIOSound *s, uint32_t stream,
  */
 static void virtio_snd_handle_xfer(VirtIODevice *vdev, VirtQueue *vq)
 {
-    virtio_snd_log("tx/rx queue callback called\n");
     VirtIOSound *s = VIRTIO_SOUND(vdev);
     VirtQueueElement *elem;
     size_t sz;
     virtio_snd_pcm_xfer hdr;
+
+    trace_virtio_snd_handle_xfer();
 
     for (;;) {
         elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
@@ -1098,7 +1091,7 @@ static void virtio_snd_handle_xfer(VirtIODevice *vdev, VirtQueue *vq)
  */
 static void virtio_snd_handle_event(VirtIODevice *vdev, VirtQueue *vq)
 {
-    virtio_snd_log("event queue callback called\n");
+    trace_virtio_snd_handle_event();
 }
 
 /*
@@ -1253,9 +1246,5 @@ static void virtio_register_types(void)
 {
     type_register_static(&virtio_snd_dev_info);
 }
-
-#undef virtio_snd_log
-#undef virtio_snd_warn
-#undef virtio_snd_err
 
 type_init(virtio_register_types)
