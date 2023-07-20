@@ -482,6 +482,55 @@ static void virtio_snd_handle_pcm_start_stop(VirtIOSound *s,
 }
 
 /*
+ * Releases the buffer resources allocated to a stream. Seperated from the
+ * handler so that the code can be reused in the unrealize function. Returns
+ * the response status code. (VIRTIO_SND_S_*).
+ *
+ * @stream: VirtIOSoundPCMStream stream
+ * @stream_id: stream id
+ */
+static uint32_t virtio_snd_pcm_release_impl(VirtIOSoundPCMStream *stream,
+                                            uint32_t stream_id)
+{
+    return VIRTIO_SND_S_OK;
+}
+
+/*
+ * Handles VIRTIO_SND_R_PCM_RELEASE.
+ *
+ * @s: VirtIOSound device
+ * @cmd: The request command queue element from VirtIOSound cmdq field
+ */
+static void virtio_snd_handle_pcm_release(VirtIOSound *s,
+                                          virtio_snd_ctrl_command *cmd)
+{
+    uint32_t stream_id;
+    VirtIOSoundPCMStream *stream;
+    size_t sz = iov_to_buf(cmd->elem->out_sg,
+                           cmd->elem->out_num,
+                           sizeof(virtio_snd_hdr),
+                           &stream_id,
+                           sizeof(stream_id));
+    if (sz != sizeof(uint32_t)) {
+        cmd->resp.code = VIRTIO_SND_S_BAD_MSG;
+        return;
+    }
+
+    trace_virtio_snd_handle_pcm_release(stream_id);
+
+    stream = virtio_snd_pcm_get_stream(s, stream_id);
+    if (!stream) {
+        error_report("already released stream %"PRIu32, stream_id);
+        virtio_error(VIRTIO_DEVICE(s),
+                     "already released stream %"PRIu32,
+                     stream_id);
+        cmd->resp.code = VIRTIO_SND_S_BAD_MSG;
+        return;
+    }
+    cmd->resp.code = virtio_snd_pcm_release_impl(stream, stream_id);
+}
+
+/*
  * The actual processing done in virtio_snd_process_cmdq().
  *
  * @s: VirtIOSound device
@@ -528,7 +577,7 @@ process_cmd(VirtIOSound *s, virtio_snd_ctrl_command *cmd)
         virtio_snd_handle_pcm_prepare(s, cmd);
         break;
     case VIRTIO_SND_R_PCM_RELEASE:
-        cmd->resp.code = VIRTIO_SND_S_NOT_SUPP;
+        virtio_snd_handle_pcm_release(s, cmd);
         break;
     case VIRTIO_SND_R_CHMAP_INFO:
         qemu_log_mask(LOG_UNIMP,
