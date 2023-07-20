@@ -63,12 +63,18 @@ static void
 virtio_snd_get_config(VirtIODevice *vdev, uint8_t *config)
 {
     VirtIOSound *s = VIRTIO_SND(vdev);
+    virtio_snd_config *sndconfig =
+        (virtio_snd_config *)config;
     trace_virtio_snd_get_config(vdev,
                                 s->snd_conf.jacks,
                                 s->snd_conf.streams,
                                 s->snd_conf.chmaps);
 
-    memcpy(config, &s->snd_conf, sizeof(s->snd_conf));
+    memcpy(sndconfig, &s->snd_conf, sizeof(s->snd_conf));
+    cpu_to_le32s(&sndconfig->jacks);
+    cpu_to_le32s(&sndconfig->streams);
+    cpu_to_le32s(&sndconfig->chmaps);
+
 }
 
 static void
@@ -87,7 +93,11 @@ virtio_snd_set_config(VirtIODevice *vdev, const uint8_t *config)
                                s->snd_conf.chmaps,
                                sndconfig->chmaps);
 
-    memcpy(&s->snd_conf, sndconfig, sizeof(s->snd_conf));
+    memcpy(&s->snd_conf, sndconfig, sizeof(virtio_snd_config));
+    le32_to_cpus(&s->snd_conf.jacks);
+    le32_to_cpus(&s->snd_conf.streams);
+    le32_to_cpus(&s->snd_conf.chmaps);
+
 }
 
 /*
